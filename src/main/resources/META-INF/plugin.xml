@@ -1,0 +1,61 @@
+<idea-plugin>
+    <id>com.artifexa.plugin</id>
+    <name>Artifexa</name>
+    <vendor email="support@artifexa.dev" url="https://artifexa.dev">Artifexa</vendor>
+
+    <description><![CDATA[
+        <h2>Artifexa — AI-Powered Visual Code-Change Review</h2>
+        <p>Artifexa analyses every commit on a Git feature branch since its divergence from the base branch,
+        constructs a semantic component graph of all touched code, and applies an AI review layer that evaluates
+        architectural quality, best-practice adherence, and task-completion progress against a developer-supplied
+        task description.</p>
+        <ul>
+            <li>Automatic branch-point (merge-base) detection</li>
+            <li>PSI-based component graph with call / inheritance / injection edges</li>
+            <li>Layer-violation detection (Controller &rarr; Service &rarr; Repository &rarr; Domain)</li>
+            <li>Interactive, pan/zoom graph in a Tool Window</li>
+            <li>AI review: architecture, best-practices, task-completion scoring</li>
+            <li>Source code never leaves your machine in raw form &mdash; only structured summaries</li>
+        </ul>
+    ]]></description>
+
+    <change-notes><![CDATA[
+        <h3>0.1.0</h3>
+        <ul><li>Initial release &mdash; VCS ingestion, PSI graph, AI review.</li></ul>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Artifexa"
+            anchor="right"
+            factoryClass="com.artifexa.ui.ArtifexaToolWindowFactory"
+            icon="com.artifexa.ArtifexaIcons.TOOL_WINDOW"/>
+
+        <applicationService serviceImplementation="com.artifexa.settings.ArtifexaSettings"/>
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.artifexa.ui.ArtifexaConfigurable"
+            id="com.artifexa.settings"
+            displayName="Artifexa"/>
+
+        <notificationGroup id="Artifexa" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <group id="Artifexa.Actions" text="Artifexa" description="Artifexa actions" popup="true">
+            <add-to-group group-id="VcsGroups" anchor="last"/>
+            <action id="Artifexa.AnalyseBranch"
+                    class="com.artifexa.actions.AnalyseBranchAction"
+                    text="Analyse Branch"
+                    description="Build component graph for the current feature branch"/>
+            <action id="Artifexa.RunAiReview"
+                    class="com.artifexa.actions.RunAiReviewAction"
+                    text="Run AI Review"
+                    description="Run the AI architectural review on the current graph"/>
+        </group>
+    </actions>
+</idea-plugin>
