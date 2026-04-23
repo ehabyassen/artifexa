@@ -22,13 +22,22 @@ class PromptBuilder(private val maxContextChars: Int = 60_000) {
         branchDiff: BranchDiff,
         graph: ComponentGraph,
         taskDescription: String?,
+        standards: String? = null,
+        standardsSource: String? = null,
     ): BuiltPrompt {
         val context = buildContext(branchDiff, graph, taskDescription)
         var payload = json.encodeToString(context)
         if (payload.length > maxContextChars) {
             payload = json.encodeToString(compress(context))
         }
-        return BuiltPrompt(SYSTEM_PROMPT, "$USER_PROMPT_HEADER\n\n$payload")
+        val standardsBlock = if (!standards.isNullOrBlank()) {
+            val src = standardsSource?.let { " (source: $it)" }.orEmpty()
+            "\n\n## CODE REVIEW STANDARDS$src\n\nThe following document describes the coding/review standards " +
+                "that MUST be used to grade the branch. Treat every violation of these standards as a finding. " +
+                "Do not copy the standards back — cite them by quoting short phrases only.\n\n" +
+                "----- BEGIN STANDARDS -----\n$standards\n----- END STANDARDS -----"
+        } else ""
+        return BuiltPrompt(SYSTEM_PROMPT, "$USER_PROMPT_HEADER\n\n$payload$standardsBlock")
     }
 
     private fun buildContext(
@@ -90,7 +99,7 @@ class PromptBuilder(private val maxContextChars: Int = 60_000) {
     }
 
     companion object {
-        const val SYSTEM_PROMPT: String = """You are a senior software architect reviewing a Git feature branch. You will receive a STRUCTURED SUMMARY of a semantic component graph and diff metadata — NO source code. Your job is to assess architecture quality, best-practice adherence, and task completion.
+        const val SYSTEM_PROMPT: String = """You are a senior software architect reviewing a Git feature branch. You will receive a STRUCTURED SUMMARY of a semantic component graph and diff metadata — NO source code. Your job is to assess architecture quality, best-practice adherence, and task completion. If a "CODE REVIEW STANDARDS" section is included, grade the branch against those standards AS WELL AS the generic checks, and call out any standards violations explicitly in bestPracticesFindings.
 
 Return ONLY a valid JSON object with this exact shape:
 {

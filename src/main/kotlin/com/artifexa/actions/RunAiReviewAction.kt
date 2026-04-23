@@ -3,6 +3,8 @@ package com.artifexa.actions
 import com.artifexa.ai.AiReviewEngine
 import com.artifexa.ai.LlmClient
 import com.artifexa.ai.ReviewResult
+import com.artifexa.ai.StandardsFetcher
+import com.artifexa.settings.ArtifexaSettings
 import com.artifexa.ui.ArtifexaToolWindowFactory
 import com.artifexa.ui.ArtifexaToolWindowPanel
 import com.artifexa.vcs.BranchDiff
@@ -39,8 +41,26 @@ class RunAiReviewAction : AnAction() {
         object : Task.Backgroundable(project, "Artifexa: running AI review…", true) {
             override fun run(indicator: ProgressIndicator) {
                 val engine = AiReviewEngine()
+                val settings = ArtifexaSettings.getInstance()
+                val standardsUrl = settings.state.codeReviewStandardsUrl.trim()
+                var standards: String? = null
+                var standardsSource: String? = null
+                if (standardsUrl.isNotEmpty()) {
+                    indicator.text = "Fetching code review standards…"
+                    StandardsFetcher().fetch(standardsUrl).onSuccess { fetched ->
+                        standards = if (fetched.truncated) fetched.content + "\n\n[… truncated]" else fetched.content
+                        standardsSource = fetched.sourceUrl
+                    }.onFailure { err ->
+                        notify(project,
+                            "Could not fetch code review standards from $standardsUrl: ${err.message}. Proceeding without them.",
+                            NotificationType.WARNING)
+                    }
+                }
+                indicator.text = "Running AI review…"
                 try {
-                    val result: ReviewResult = runBlocking { engine.runReview(branchDiff, graph, task) }
+                    val result: ReviewResult = runBlocking {
+                        engine.runReview(branchDiff, graph, task, standards, standardsSource)
+                    }
                     ApplicationManager.getApplication().invokeLater {
                         panel.reviewPanel.renderResult(result)
                     }

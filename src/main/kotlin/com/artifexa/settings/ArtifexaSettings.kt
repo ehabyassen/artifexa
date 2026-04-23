@@ -29,6 +29,9 @@ class ArtifexaSettings : PersistentStateComponent<ArtifexaSettings.State> {
         var componentGranularity: ComponentGranularity = ComponentGranularity.CLASS
         var maxGraphNodes: Int = 150
         var localOnlyMode: Boolean = false
+        /** Public URL to a code-review standards document (Markdown, plain text, etc.).
+         *  When set, AI Review fetches this document and grades the branch against it. */
+        var codeReviewStandardsUrl: String = ""
         var layerPatterns: MutableMap<String, MutableList<String>> = defaultLayerPatterns()
 
         companion object {

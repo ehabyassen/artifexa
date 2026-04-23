@@ -25,8 +25,10 @@ class AiReviewEngine(
         branchDiff: BranchDiff,
         graph: ComponentGraph,
         taskDescription: String?,
+        standards: String? = null,
+        standardsSource: String? = null,
     ): Flow<String> {
-        val prompt = promptBuilder.build(branchDiff, graph, taskDescription)
+        val prompt = promptBuilder.build(branchDiff, graph, taskDescription, standards, standardsSource)
         return client.stream(prompt, settingsProvider())
     }
 
@@ -38,9 +40,11 @@ class AiReviewEngine(
         branchDiff: BranchDiff,
         graph: ComponentGraph,
         taskDescription: String?,
+        standards: String? = null,
+        standardsSource: String? = null,
     ): ReviewResult {
         val sb = StringBuilder()
-        streamReview(branchDiff, graph, taskDescription).map {
+        streamReview(branchDiff, graph, taskDescription, standards, standardsSource).map {
             sb.append(it); it
         }.collect {}
         return parse(sb.toString())

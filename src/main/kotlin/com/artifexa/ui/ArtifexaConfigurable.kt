@@ -64,6 +64,11 @@ class ArtifexaConfigurable : Configurable {
                 row("Custom endpoint URL:") {
                     cell(customEndpointField).align(AlignX.FILL)
                 }
+                row("Code review standards URL:") {
+                    textField().bindText(state::codeReviewStandardsUrl).align(AlignX.FILL)
+                        .comment("Public URL to a Markdown/plain-text file (GitHub blob or raw). " +
+                            "AI Review will grade the branch against this document.")
+                }
             }
 
             group("API Keys (stored in OS keychain)") {
