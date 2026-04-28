@@ -48,7 +48,10 @@ class LlmClient(
         val request = when (state.llmProvider) {
             LlmProvider.OPENAI -> buildOpenAiRequest(prompt, state.openAiModel, OPENAI_URL, settings.getApiKey(LlmProvider.OPENAI), "OpenAI API key")
             LlmProvider.ANTHROPIC -> buildAnthropicRequest(prompt, state.anthropicModel, settings.getApiKey(LlmProvider.ANTHROPIC))
-            LlmProvider.GITHUB_MODELS -> buildOpenAiRequest(prompt, state.githubModel, GITHUB_MODELS_URL, settings.getApiKey(LlmProvider.GITHUB_MODELS), "GitHub token")
+            LlmProvider.GITHUB_MODELS -> buildOpenAiRequest(
+                prompt, state.githubModel, GITHUB_MODELS_URL, settings.getApiKey(LlmProvider.GITHUB_MODELS), "GitHub token",
+                extraHeaders = mapOf("X-GitHub-Api-Version" to GITHUB_API_VERSION),
+            )
             LlmProvider.CUSTOM -> {
                 val url = state.customEndpointUrl.trim().ifEmpty { throw LlmException("Custom endpoint URL is empty.") }
                 buildOpenAiRequest(prompt, state.openAiModel, url, settings.getApiKey(LlmProvider.CUSTOM) ?: settings.getApiKey(LlmProvider.OPENAI), "Custom endpoint API key")
@@ -96,10 +99,12 @@ class LlmClient(
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: okhttp3.Response?) {
                 val code = response?.code ?: 0
                 val msg = response?.message ?: t?.message ?: "unknown"
+                val body = runCatching { response?.peekBody(2048)?.string().orEmpty() }.getOrDefault("")
+                val suffix = if (body.isNotBlank()) " — ${body.trim().take(500)}" else ""
                 val err: Throwable = if (code == 429 || code in 500..599) {
-                    RetryableStatusException("$code $msg")
+                    RetryableStatusException("$code $msg$suffix")
                 } else {
-                    IOException("$code $msg")
+                    IOException("$code $msg$suffix")
                 }
                 if (!completion.isCompleted) completion.completeExceptionally(err)
             }
@@ -132,7 +137,14 @@ class LlmClient(
         }
     }
 
-    private fun buildOpenAiRequest(prompt: PromptBuilder.BuiltPrompt, model: String, url: String, apiKey: String?, keyLabel: String): Request {
+    private fun buildOpenAiRequest(
+        prompt: PromptBuilder.BuiltPrompt,
+        model: String,
+        url: String,
+        apiKey: String?,
+        keyLabel: String,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): Request {
         if (apiKey.isNullOrBlank()) throw LlmException("$keyLabel is not set. Configure it in Settings → Tools → Artifexa.")
         val body = buildJsonObject {
             put("model", model)
@@ -149,13 +161,14 @@ class LlmClient(
                 }
             }
         }.toString().toRequestBody(JSON)
-        return Request.Builder()
+        val builder = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
             .addHeader("Accept", "text/event-stream")
             .post(body)
-            .build()
+        extraHeaders.forEach { (k, v) -> builder.addHeader(k, v) }
+        return builder.build()
     }
 
     private fun buildAnthropicRequest(prompt: PromptBuilder.BuiltPrompt, model: String, apiKey: String?): Request {
@@ -188,6 +201,7 @@ class LlmClient(
         private const val OPENAI_URL = "https://api.openai.com/v1/chat/completions"
         private const val ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
         private const val GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
+        private const val GITHUB_API_VERSION = "2026-03-10"
         private const val MAX_RETRIES = 3
         private val JSON = "application/json; charset=utf-8".toMediaType()
 
