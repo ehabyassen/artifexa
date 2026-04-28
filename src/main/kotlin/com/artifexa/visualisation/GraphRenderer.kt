@@ -12,8 +12,12 @@ import java.awt.Point
 import java.awt.RenderingHints
 import java.awt.geom.Ellipse2D
 import java.awt.geom.Line2D
+import java.awt.geom.Path2D
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -22,10 +26,13 @@ import kotlin.math.sqrt
  */
 class GraphRenderer {
 
-    data class Layout(
-        val positions: Map<String, Point>,
-        val bounds: java.awt.Rectangle,
-    )
+    /**
+     * Positions are mutable [Point] instances so the panel can drag nodes by mutating in place.
+     * Bounds are recomputed on access since they shift as nodes move.
+     */
+    class Layout(val positions: Map<String, Point>) {
+        val bounds: java.awt.Rectangle get() = GraphRenderer.computeBounds(positions)
+    }
 
     private val colorChanged = Color(0x4F, 0x8E, 0xF7)
     private val colorNeighbour = Color(0xF5, 0x9E, 0x0B)
@@ -96,20 +103,36 @@ class GraphRenderer {
         }
 
         val rounded = positions.mapValues { Point(it.value.x.toInt(), it.value.y.toInt()) }
-        val bounds = computeBounds(rounded)
-        return Layout(rounded, bounds)
+        return Layout(rounded)
     }
 
     fun paint(g: Graphics2D, graph: ComponentGraph, layout: Layout) {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        val nodeById = graph.nodesById
 
-        // Edges first
+        // Edges first — drawn from source-circle boundary to a point just outside the
+        // destination circle so the arrowhead sits on the rim instead of being hidden by it.
         for (edge in graph.edges) {
             val a = layout.positions[edge.fromId] ?: continue
             val b = layout.positions[edge.toId] ?: continue
+            val fromNode = nodeById[edge.fromId] ?: continue
+            val toNode = nodeById[edge.toId] ?: continue
+            val rFrom = nodeRadius(fromNode)
+            val rTo = nodeRadius(toNode)
+            val dx = (b.x - a.x).toDouble()
+            val dy = (b.y - a.y).toDouble()
+            val dist = sqrt(dx * dx + dy * dy)
+            if (dist < rFrom + rTo + 2.0) continue
+            val ux = dx / dist; val uy = dy / dist
+            val sx = a.x + ux * rFrom
+            val sy = a.y + uy * rFrom
+            val tx = b.x - ux * rTo
+            val ty = b.y - uy * rTo
+
             g.color = if (edge.isLayerViolation) colorEdgeViolation else colorEdge
             g.stroke = strokeFor(edge.type, edge.isLayerViolation)
-            g.draw(Line2D.Float(a.x.toFloat(), a.y.toFloat(), b.x.toFloat(), b.y.toFloat()))
+            g.draw(Line2D.Double(sx, sy, tx, ty))
+            drawArrowHead(g, sx, sy, tx, ty, edge.type, edge.isLayerViolation)
         }
 
         // Nodes on top
@@ -123,16 +146,60 @@ class GraphRenderer {
             g.stroke = BasicStroke(1f)
             g.draw(shape)
 
-            g.color = colorLabel
+            g.color = if (node.status == NodeStatus.DELETED) colorDeleted else colorLabel
             g.font = g.font.deriveFont(11f)
             val label = node.simpleName
-            val width = g.fontMetrics.stringWidth(label)
-            g.drawString(label, p.x - width / 2, (p.y + radius + 12).toInt())
+            val labelWidth = g.fontMetrics.stringWidth(label)
+            val labelX = (p.x - labelWidth / 2).toInt()
+            val labelY = (p.y + radius + 12).toInt()
+            g.drawString(label, labelX, labelY)
+            if (node.status == NodeStatus.DELETED) {
+                // Strikethrough through the label so deleted components are obvious.
+                val strikeY = labelY - g.fontMetrics.ascent / 3
+                g.stroke = BasicStroke(1.2f)
+                g.drawLine(labelX - 2, strikeY, labelX + labelWidth + 2, strikeY)
+            }
         }
     }
 
     fun nodeRadius(node: ComponentNode): Double =
         6.0 + node.changeIntensity * 18.0
+
+    /**
+     * Direction matches the edge's logical orientation: the head sits at (tx, ty) and
+     * points away from (sx, sy). Inheritance/implements get the open UML triangle, the
+     * rest get a filled chevron.
+     */
+    private fun drawArrowHead(
+        g: Graphics2D,
+        sx: Double, sy: Double,
+        tx: Double, ty: Double,
+        type: EdgeType,
+        violation: Boolean,
+    ) {
+        val angle = atan2(ty - sy, tx - sx)
+        val size = if (violation) 10.0 else 8.0
+        val ax = tx - size * cos(angle - Math.PI / 7)
+        val ay = ty - size * sin(angle - Math.PI / 7)
+        val bx = tx - size * cos(angle + Math.PI / 7)
+        val by = ty - size * sin(angle + Math.PI / 7)
+        val tri = Path2D.Double()
+        tri.moveTo(tx, ty)
+        tri.lineTo(ax, ay)
+        tri.lineTo(bx, by)
+        tri.closePath()
+        when (type) {
+            EdgeType.INHERITS, EdgeType.IMPLEMENTS -> {
+                val prev = g.color
+                g.color = Color(0x1E, 0x1F, 0x22) // panel background — hollow look
+                g.fill(tri)
+                g.color = prev
+                g.stroke = BasicStroke(1.2f)
+                g.draw(tri)
+            }
+            else -> g.fill(tri)
+        }
+    }
 
     fun nodeAt(layout: Layout, x: Int, y: Int, graph: ComponentGraph): ComponentNode? {
         for (node in graph.nodes.reversed()) {
@@ -162,15 +229,17 @@ class GraphRenderer {
         }
     }
 
-    private fun computeBounds(positions: Map<String, Point>): java.awt.Rectangle {
-        if (positions.isEmpty()) return java.awt.Rectangle(0, 0, 1, 1)
-        var minX = Int.MAX_VALUE; var maxX = Int.MIN_VALUE
-        var minY = Int.MAX_VALUE; var maxY = Int.MIN_VALUE
-        for (p in positions.values) {
-            if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x
-            if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y
+    companion object {
+        fun computeBounds(positions: Map<String, Point>): java.awt.Rectangle {
+            if (positions.isEmpty()) return java.awt.Rectangle(0, 0, 1, 1)
+            var minX = Int.MAX_VALUE; var maxX = Int.MIN_VALUE
+            var minY = Int.MAX_VALUE; var maxY = Int.MIN_VALUE
+            for (p in positions.values) {
+                if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x
+                if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y
+            }
+            return java.awt.Rectangle(minX, minY, maxX - minX, maxY - minY)
         }
-        return java.awt.Rectangle(minX, minY, maxX - minX, maxY - minY)
     }
 
     private class DoublePoint(var x: Double, var y: Double)

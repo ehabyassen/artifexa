@@ -2,6 +2,7 @@ package com.artifexa.ui
 
 import com.artifexa.graph.ComponentGraph
 import com.artifexa.visualisation.GraphPanel
+import com.artifexa.visualisation.VisualizationPanel
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.ActionToolbar
@@ -36,15 +37,17 @@ class ArtifexaToolWindowFactory : ToolWindowFactory {
  */
 class ArtifexaToolWindowPanel(val project: Project) : JPanel(BorderLayout()) {
 
-    val graphPanel: GraphPanel = GraphPanel(project)
-    val reviewPanel: ReviewPanel = ReviewPanel()
+    val visualizationPanel: VisualizationPanel = VisualizationPanel(project)
+    /** Kept as a convenience alias so existing call sites that reach for the graph view still work. */
+    val graphPanel: GraphPanel get() = visualizationPanel.graphPanel
+    val reviewPanel: ReviewPanel = ReviewPanel(project)
     val taskPanel: TaskDescriptionPanel = TaskDescriptionPanel(project)
     val statusLabel: JLabel = JLabel(" Ready.")
 
     var currentGraph: ComponentGraph? = null
         set(value) {
             field = value
-            graphPanel.setGraph(value)
+            visualizationPanel.setGraph(value)
             if (value != null) {
                 statusLabel.text = " ${value.nodes.size} nodes, ${value.edges.size} edges" +
                     if (value.layerViolations().isNotEmpty()) " · ${value.layerViolations().size} layer violation(s)" else ""
@@ -74,7 +77,7 @@ class ArtifexaToolWindowPanel(val project: Project) : JPanel(BorderLayout()) {
         val top = OnePixelSplitter(true, 0.18f)
         top.firstComponent = taskPanel
         val lower = OnePixelSplitter(false, 0.65f)
-        lower.firstComponent = graphPanel
+        lower.firstComponent = visualizationPanel
         lower.secondComponent = reviewPanel
         top.secondComponent = lower
         return top

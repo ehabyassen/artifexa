@@ -3,6 +3,7 @@ package com.artifexa.ai
 import com.artifexa.graph.ComponentEdge
 import com.artifexa.graph.ComponentGraph
 import com.artifexa.graph.ComponentNode
+import com.artifexa.vcs.BranchAnalyser
 import com.artifexa.vcs.BranchDiff
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -24,12 +25,25 @@ class PromptBuilder(private val maxContextChars: Int = 60_000) {
         taskDescription: String?,
         standards: String? = null,
         standardsSource: String? = null,
+        classDetails: List<ClassDetails> = emptyList(),
+        hunksByFqn: Map<String, List<BranchAnalyser.DiffHunk>> = emptyMap(),
     ): BuiltPrompt {
         val context = buildContext(branchDiff, graph, taskDescription)
         var payload = json.encodeToString(context)
         if (payload.length > maxContextChars) {
             payload = json.encodeToString(compress(context))
         }
+        val detailsBlock = if (classDetails.isNotEmpty()) {
+            val detailsJson = json.encodeToString(classDetails)
+            val capped = if (detailsJson.length > maxContextChars) detailsJson.substring(0, maxContextChars) + "\n... [truncated]" else detailsJson
+            "\n\n## CHANGED CLASS METADATA\n\n$capped"
+        } else ""
+        val hunksBlock = if (hunksByFqn.isNotEmpty()) {
+            val rendered = renderHunks(hunksByFqn, classDetails)
+            "\n\n## DIFF HUNKS PER COMPONENT\n\nLine numbers shown in the left column are NEW-file line numbers " +
+                "(post-change). Lines beginning with '+' were added, '-' removed, ' ' are unchanged context. " +
+                "When you return componentReviews[].lineComments[].line, use these NEW-file line numbers.\n\n$rendered"
+        } else ""
         val standardsBlock = if (!standards.isNullOrBlank()) {
             val src = standardsSource?.let { " (source: $it)" }.orEmpty()
             "\n\n## CODE REVIEW STANDARDS$src\n\nThe following document describes the coding/review standards " +
@@ -37,7 +51,36 @@ class PromptBuilder(private val maxContextChars: Int = 60_000) {
                 "Do not copy the standards back — cite them by quoting short phrases only.\n\n" +
                 "----- BEGIN STANDARDS -----\n$standards\n----- END STANDARDS -----"
         } else ""
-        return BuiltPrompt(SYSTEM_PROMPT, "$USER_PROMPT_HEADER\n\n$payload$standardsBlock")
+        return BuiltPrompt(SYSTEM_PROMPT, "$USER_PROMPT_HEADER\n\n$payload$detailsBlock$hunksBlock$standardsBlock")
+    }
+
+    private fun renderHunks(
+        hunksByFqn: Map<String, List<BranchAnalyser.DiffHunk>>,
+        classDetails: List<ClassDetails>,
+    ): String {
+        val pathByFqn = classDetails.associate { it.fqn to it.simpleName }
+        val budget = maxContextChars
+        val out = StringBuilder()
+        for ((fqn, hunks) in hunksByFqn) {
+            if (out.length >= budget) {
+                out.append("\n[... additional components truncated due to context budget ...]\n")
+                break
+            }
+            out.append("\n### Component: $fqn")
+            pathByFqn[fqn]?.let { out.append(" ($it)") }
+            out.append("\n")
+            for (hunk in hunks) {
+                out.append("```\n")
+                for (line in hunk.lines) {
+                    val ln = line.newLine?.toString()?.padStart(5) ?: "     "
+                    out.append(ln).append(" ").append(line.prefix).append(line.content).append("\n")
+                    if (out.length >= budget) break
+                }
+                out.append("```\n")
+                if (out.length >= budget) break
+            }
+        }
+        return out.toString()
     }
 
     private fun buildContext(
@@ -99,7 +142,46 @@ class PromptBuilder(private val maxContextChars: Int = 60_000) {
     }
 
     companion object {
-        const val SYSTEM_PROMPT: String = """You are a senior software architect reviewing a Git feature branch. You will receive a STRUCTURED SUMMARY of a semantic component graph and diff metadata — NO source code. Your job is to assess architecture quality, best-practice adherence, and task completion. If a "CODE REVIEW STANDARDS" section is included, grade the branch against those standards AS WELL AS the generic checks, and call out any standards violations explicitly in bestPracticesFindings.
+        const val SYSTEM_PROMPT: String = """You are a senior software engineer performing a thorough code review of a Git feature branch. You will receive: (1) a STRUCTURED SUMMARY of the component graph and diff metadata, (2) CHANGED CLASS METADATA (method signatures, fields, imports, annotations), (3) DIFF HUNKS PER COMPONENT with new-file line numbers, and (4) an optional CODE REVIEW STANDARDS document.
+
+Your job has TWO deliverables:
+A. High-level assessment — architecture, best-practice findings, task completion (same as before).
+B. Per-component, line-by-line review — for each directly changed component, produce a short summary AND concrete line-level comments anchored to specific NEW-file line numbers you observed in the DIFF HUNKS section.
+
+Return ONLY a valid JSON object with this EXACT shape:
+{
+  "overallSummary": "<1-3 sentence executive summary>",
+  "architectureAssessment": "<layer violations, coupling, SOLID>",
+  "bestPracticesFindings": [
+    { "severity": "ERROR|WARNING|INFO", "title": "<short>", "description": "<actionable>", "affectedComponent": "<fqn or null>", "line": <new-file line number or null> }
+  ],
+  "taskCompletionScore": <0..100 or null>,
+  "completedAspects": ["<short bullet>"],
+  "missingAspects": ["<short bullet>"],
+  "componentReviews": [
+    {
+      "fqn": "<fully qualified class name>",
+      "filePath": "<repo-relative path>",
+      "summary": "<1-3 sentence component-level review>",
+      "lineComments": [
+        { "line": <new-file line number from the hunks>, "comment": "<concrete, actionable comment about THIS line>" }
+      ]
+    }
+  ]
+}
+
+Rules:
+- Output must be valid JSON. No Markdown fences.
+- The 'line' field must match a new-file line number that actually appears in the DIFF HUNKS section for that component.
+- Comments must be constructive ("Consider…", "This could…"). Never accusatory.
+- Only comment on lines where you can make a concrete, evidence-based observation (correctness, style, complexity, naming, error handling, security, standards compliance). Do not pad.
+- When CODE REVIEW STANDARDS are present, cite the relevant rule in the comment (keep the citation short).
+
+CRITICAL EVIDENCE RULES:
+1. NEVER raise a finding or line-comment unless the provided material contradicts a best practice. If the code is already correct on that line, stay silent.
+2. Before suggesting "mark X static/final/private" or "rename X to camelCase/UPPER_SNAKE_CASE", inspect the actual modifiers list or name in the metadata/hunks. Do not recommend a state that already holds.
+3. Each line-comment MUST reference specifics from the hunk on that line (a token, an expression, a missing annotation, etc.) — not a generic admonition.
+4. Empty componentReviews[].lineComments is acceptable and preferred over speculative comments.
 
 Return ONLY a valid JSON object with this exact shape:
 {

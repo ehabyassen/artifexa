@@ -65,8 +65,13 @@ class ComponentGraphBuilder(
             jvmCount++
             if (fd.status == ChangeStatus.DELETED) {
                 val fqn = guessFqnFromPath(fd.path) ?: fd.path
+                // Derive the component name from the file basename (e.g. "Foo.kt" → "Foo").
+                // Don't use fqn.substringAfterLast('.') — when guessFqnFromPath fails the fqn
+                // is the raw path, so its dotted suffix is the file extension ("java"/"kt").
+                val baseName = fd.path.substringAfterLast('/')
+                    .removeSuffix(".kt").removeSuffix(".java")
                 nodeMap[fqn] = NodeBuilder(
-                    id = fqn, simpleName = fqn.substringAfterLast('.'), filePath = fd.path,
+                    id = fqn, simpleName = baseName, filePath = fd.path,
                     layer = LayerType.UNKNOWN, isDirectlyChanged = true, isTestComponent = false,
                     linesAdded = fd.linesAdded, linesRemoved = fd.linesRemoved,
                     hasTests = false, status = NodeStatus.DELETED,
@@ -82,9 +87,12 @@ class ComponentGraphBuilder(
             for (cls in psiFile.classes) {
                 val fqn = cls.qualifiedName ?: continue
                 resolved++
-                val methodLines = branchDiff.methodDiffs.filter { it.fqClassName == fqn }
-                val linesAdded = if (methodLines.isNotEmpty()) methodLines.sumOf { it.linesAdded } else fd.linesAdded
-                val linesRemoved = if (methodLines.isNotEmpty()) methodLines.sumOf { it.linesRemoved } else fd.linesRemoved
+                // Use file-level diff totals from `git diff --numstat`. Summing methodDiffs
+                // double-counts: a single hunk that overlaps N methods is credited to each one,
+                // which inflates new files (one giant "add" hunk × N methods) far past their
+                // real line count.
+                val linesAdded = fd.linesAdded
+                val linesRemoved = fd.linesRemoved
                 val isTest = isTestFile(fd.path) || isTestClass(cls)
                 nodeMap[fqn] = NodeBuilder(
                     id = fqn, simpleName = cls.name ?: fqn.substringAfterLast('.'),

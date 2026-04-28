@@ -2,6 +2,7 @@ package com.artifexa.ai
 
 import com.artifexa.graph.ComponentGraph
 import com.artifexa.settings.ArtifexaSettings
+import com.artifexa.vcs.BranchAnalyser
 import com.artifexa.vcs.BranchDiff
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -27,8 +28,12 @@ class AiReviewEngine(
         taskDescription: String?,
         standards: String? = null,
         standardsSource: String? = null,
+        classDetails: List<ClassDetails> = emptyList(),
+        hunksByFqn: Map<String, List<BranchAnalyser.DiffHunk>> = emptyMap(),
     ): Flow<String> {
-        val prompt = promptBuilder.build(branchDiff, graph, taskDescription, standards, standardsSource)
+        val prompt = promptBuilder.build(
+            branchDiff, graph, taskDescription, standards, standardsSource, classDetails, hunksByFqn,
+        )
         return client.stream(prompt, settingsProvider())
     }
 
@@ -42,9 +47,11 @@ class AiReviewEngine(
         taskDescription: String?,
         standards: String? = null,
         standardsSource: String? = null,
+        classDetails: List<ClassDetails> = emptyList(),
+        hunksByFqn: Map<String, List<BranchAnalyser.DiffHunk>> = emptyMap(),
     ): ReviewResult {
         val sb = StringBuilder()
-        streamReview(branchDiff, graph, taskDescription, standards, standardsSource).map {
+        streamReview(branchDiff, graph, taskDescription, standards, standardsSource, classDetails, hunksByFqn).map {
             sb.append(it); it
         }.collect {}
         return parse(sb.toString())
@@ -66,11 +73,31 @@ class AiReviewEngine(
                     title = obj.str("title"),
                     description = obj.str("description"),
                     affectedComponent = obj.nullableStr("affectedComponent"),
+                    line = (obj["line"] as? JsonPrimitive)?.content?.toIntOrNull(),
                 )
             }.orEmpty(),
             taskCompletionScore = (parsed["taskCompletionScore"] as? JsonPrimitive)?.content?.toIntOrNull(),
             completedAspects = parsed.strList("completedAspects"),
             missingAspects = parsed.strList("missingAspects"),
+            componentReviews = parsed["componentReviews"]?.let { el ->
+                runCatching { el.jsonArray }.getOrNull()
+            }?.mapNotNull { cr ->
+                val obj = runCatching { cr.jsonObject }.getOrNull() ?: return@mapNotNull null
+                val fqn = obj.str("fqn").ifBlank { return@mapNotNull null }
+                val comments = obj["lineComments"]?.let { el -> runCatching { el.jsonArray }.getOrNull() }
+                    ?.mapNotNull { lc ->
+                        val lcObj = runCatching { lc.jsonObject }.getOrNull() ?: return@mapNotNull null
+                        val line = (lcObj["line"] as? JsonPrimitive)?.content?.toIntOrNull() ?: return@mapNotNull null
+                        val txt = lcObj.str("comment")
+                        if (txt.isBlank()) null else LineComment(line, txt)
+                    }.orEmpty()
+                ComponentReview(
+                    fqn = fqn,
+                    filePath = obj.str("filePath"),
+                    summary = obj.str("summary"),
+                    lineComments = comments,
+                )
+            }.orEmpty(),
         )
     }
 

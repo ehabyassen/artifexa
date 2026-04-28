@@ -22,6 +22,20 @@ class StandardsFetcher(
     fun fetch(url: String): Result<Fetched> {
         val trimmed = url.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Empty URL"))
+
+        // Local file path or file:// URI — read from disk, no network.
+        if (trimmed.startsWith("file://") || trimmed.startsWith("/")) {
+            return runCatching {
+                val path = if (trimmed.startsWith("file://")) trimmed.removePrefix("file://") else trimmed
+                val f = java.io.File(path)
+                if (!f.isFile) throw RuntimeException("Standards file not found: $path")
+                val bytes = f.readBytes()
+                val truncated = bytes.size > maxBytes
+                val slice = if (truncated) bytes.copyOf(maxBytes) else bytes
+                Fetched(String(slice, Charsets.UTF_8), f.absolutePath, truncated)
+            }.onFailure { log.warn("Artifexa: local standards read failed for $url: ${it.message}") }
+        }
+
         val resolved = normaliseGithubUrl(trimmed)
         return runCatching {
             val req = Request.Builder()

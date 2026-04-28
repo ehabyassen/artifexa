@@ -10,7 +10,7 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.util.xmlb.XmlSerializerUtil
 
-enum class LlmProvider { OPENAI, ANTHROPIC, CUSTOM }
+enum class LlmProvider { OPENAI, ANTHROPIC, GITHUB_MODELS, CUSTOM }
 
 enum class ComponentGranularity { CLASS, PACKAGE, MODULE }
 
@@ -26,11 +26,12 @@ class ArtifexaSettings : PersistentStateComponent<ArtifexaSettings.State> {
         var customEndpointUrl: String = ""
         var openAiModel: String = "gpt-4o"
         var anthropicModel: String = "claude-sonnet-4-20250514"
+        var githubModel: String = "openai/gpt-4o"
         var componentGranularity: ComponentGranularity = ComponentGranularity.CLASS
         var maxGraphNodes: Int = 150
         var localOnlyMode: Boolean = false
-        /** Public URL to a code-review standards document (Markdown, plain text, etc.).
-         *  When set, AI Review fetches this document and grades the branch against it. */
+        /** Public URL (or `file://` path) to a code-review standards document.
+         *  When set, Review grades the branch against it. */
         var codeReviewStandardsUrl: String = ""
         var layerPatterns: MutableMap<String, MutableList<String>> = defaultLayerPatterns()
 

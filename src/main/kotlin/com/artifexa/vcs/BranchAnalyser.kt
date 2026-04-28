@@ -186,6 +186,93 @@ class BranchAnalyser(private val project: Project) {
         }
     }
 
+    // ---- structured hunk reading for line-by-line review -----------------
+
+    data class DiffLine(
+        /** Line number in the new file (null for '-' deletions). */
+        val newLine: Int?,
+        /** Line number in the old file (null for '+' additions). */
+        val oldLine: Int?,
+        /** '+', '-', or ' '. */
+        val prefix: Char,
+        val content: String,
+    )
+
+    data class DiffHunk(
+        val newStartLine: Int,
+        val newEndLine: Int,
+        val lines: List<DiffLine>,
+    )
+
+    /**
+     * Returns the full structured diff for [path] between branch point and HEAD,
+     * preserving line-number mapping and prefixes so a review UI can annotate
+     * comments next to specific new-file line numbers.
+     */
+    fun readStructuredDiff(repo: GitRepository, branchPointHash: String, path: String): List<DiffHunk> {
+        val handler = GitLineHandler(project, repo.root, GitCommand.DIFF)
+        handler.addParameters("--unified=3", "$branchPointHash..HEAD", "--", path)
+        val result = Git.getInstance().runCommand(handler)
+        if (!result.success()) return emptyList()
+
+        val hunks = mutableListOf<DiffHunk>()
+        val hunkRegex = Regex("""^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@""")
+        var currentLines: MutableList<DiffLine>? = null
+        var newStart = 0
+        var newCursor = 0
+        var oldCursor = 0
+        var newEnd = 0
+
+        fun flush() {
+            val lines = currentLines ?: return
+            if (lines.isNotEmpty()) hunks += DiffHunk(newStart, newEnd, lines.toList())
+            currentLines = null
+        }
+
+        for (raw in result.output) {
+            val m = hunkRegex.find(raw)
+            if (m != null) {
+                flush()
+                val oldStart = m.groupValues[1].toInt()
+                newStart = m.groupValues[3].toInt()
+                newCursor = newStart
+                oldCursor = oldStart
+                newEnd = newStart
+                currentLines = mutableListOf()
+                continue
+            }
+            if (raw.startsWith("diff ") || raw.startsWith("index ") ||
+                raw.startsWith("--- ") || raw.startsWith("+++ ")) continue
+            val lines = currentLines ?: continue
+            if (raw.isEmpty()) {
+                // preserve blank context lines
+                lines += DiffLine(newCursor, oldCursor, ' ', "")
+                newCursor++; oldCursor++; newEnd = newCursor - 1
+                continue
+            }
+            val prefix = raw[0]
+            val content = if (raw.length > 1) raw.substring(1) else ""
+            when (prefix) {
+                '+' -> {
+                    lines += DiffLine(newCursor, null, '+', content)
+                    newEnd = newCursor
+                    newCursor++
+                }
+                '-' -> {
+                    lines += DiffLine(null, oldCursor, '-', content)
+                    oldCursor++
+                }
+                else -> {
+                    lines += DiffLine(newCursor, oldCursor, ' ', content)
+                    newEnd = newCursor
+                    newCursor++; oldCursor++
+                }
+            }
+        }
+        flush()
+        return hunks
+    }
+
     private fun readHunkLineRanges(
         repo: GitRepository,
         range: String,
@@ -207,6 +294,7 @@ class BranchAnalyser(private val project: Project) {
         }
         return ranges
     }
+
 
     private data class HunkRange(
         val startLine: Int,

@@ -46,11 +46,12 @@ class LlmClient(
         }
 
         val request = when (state.llmProvider) {
-            LlmProvider.OPENAI -> buildOpenAiRequest(prompt, state.openAiModel, OPENAI_URL, settings.getApiKey(LlmProvider.OPENAI))
+            LlmProvider.OPENAI -> buildOpenAiRequest(prompt, state.openAiModel, OPENAI_URL, settings.getApiKey(LlmProvider.OPENAI), "OpenAI API key")
             LlmProvider.ANTHROPIC -> buildAnthropicRequest(prompt, state.anthropicModel, settings.getApiKey(LlmProvider.ANTHROPIC))
+            LlmProvider.GITHUB_MODELS -> buildOpenAiRequest(prompt, state.githubModel, GITHUB_MODELS_URL, settings.getApiKey(LlmProvider.GITHUB_MODELS), "GitHub token")
             LlmProvider.CUSTOM -> {
                 val url = state.customEndpointUrl.trim().ifEmpty { throw LlmException("Custom endpoint URL is empty.") }
-                buildOpenAiRequest(prompt, state.openAiModel, url, settings.getApiKey(LlmProvider.CUSTOM) ?: settings.getApiKey(LlmProvider.OPENAI))
+                buildOpenAiRequest(prompt, state.openAiModel, url, settings.getApiKey(LlmProvider.CUSTOM) ?: settings.getApiKey(LlmProvider.OPENAI), "Custom endpoint API key")
             }
         }
 
@@ -115,7 +116,7 @@ class LlmClient(
         val element = json.parseToJsonElement(data)
         val obj = element as? JsonObject ?: return ""
         return when (provider) {
-            LlmProvider.OPENAI, LlmProvider.CUSTOM -> {
+            LlmProvider.OPENAI, LlmProvider.CUSTOM, LlmProvider.GITHUB_MODELS -> {
                 val choices = obj["choices"] as? JsonArray ?: return ""
                 val first = choices.firstOrNull() as? JsonObject ?: return ""
                 val delta = first["delta"] as? JsonObject ?: return ""
@@ -131,12 +132,12 @@ class LlmClient(
         }
     }
 
-    private fun buildOpenAiRequest(prompt: PromptBuilder.BuiltPrompt, model: String, url: String, apiKey: String?): Request {
-        if (apiKey.isNullOrBlank()) throw LlmException("OpenAI API key is not set. Configure it in Settings → Tools → Artifexa.")
+    private fun buildOpenAiRequest(prompt: PromptBuilder.BuiltPrompt, model: String, url: String, apiKey: String?, keyLabel: String): Request {
+        if (apiKey.isNullOrBlank()) throw LlmException("$keyLabel is not set. Configure it in Settings → Tools → Artifexa.")
         val body = buildJsonObject {
             put("model", model)
             put("stream", true)
-            put("temperature", 0.2)
+            put("temperature", 0.0)
             putJsonArray("messages") {
                 addJsonObject {
                     put("role", "system")
@@ -186,6 +187,7 @@ class LlmClient(
     companion object {
         private const val OPENAI_URL = "https://api.openai.com/v1/chat/completions"
         private const val ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+        private const val GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
         private const val MAX_RETRIES = 3
         private val JSON = "application/json; charset=utf-8".toMediaType()
 

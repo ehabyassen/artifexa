@@ -2,14 +2,11 @@ package com.artifexa.visualisation
 
 import com.artifexa.graph.ComponentGraph
 import com.artifexa.graph.ComponentNode
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.LocalFileSystem
 import java.awt.Color
 import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
-import java.awt.geom.AffineTransform
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
@@ -17,9 +14,12 @@ import javax.swing.JPanel
 
 /**
  * Interactive Swing canvas for the component graph.
- * Supports pan (click-drag), zoom (scroll), click-to-navigate, hover tooltip.
+ * Supports pan (drag empty space), node drag (drag on a node), zoom (scroll),
+ * click-to-navigate, hover tooltip.
  */
-class GraphPanel(private val project: Project) : JPanel() {
+class GraphPanel(private val project: Project) : JPanel(), VisualizationView {
+
+    override val component: javax.swing.JComponent get() = this
 
     private val renderer = GraphRenderer()
     private var graph: ComponentGraph? = null
@@ -28,9 +28,11 @@ class GraphPanel(private val project: Project) : JPanel() {
     private var offsetX: Double = 0.0
     private var offsetY: Double = 0.0
     private var dragLast: java.awt.Point? = null
+    private var draggedNode: ComponentNode? = null
+    private var didDrag: Boolean = false
     private var hoveredNode: ComponentNode? = null
 
-    var onNodeSelected: ((ComponentNode) -> Unit)? = null
+    override var onNodeSelected: ((ComponentNode) -> Unit)? = null
 
     init {
         background = Color(0x1E, 0x1F, 0x22)
@@ -51,7 +53,8 @@ class GraphPanel(private val project: Project) : JPanel() {
         })
     }
 
-    fun setGraph(g: ComponentGraph?) {
+    override fun setGraph(graph: ComponentGraph?) {
+        val g = graph
         if (g == null || g.nodes.isEmpty()) {
             // Update both fields atomically from the EDT's point of view (we're on EDT here).
             this.graph = g
@@ -82,22 +85,24 @@ class GraphPanel(private val project: Project) : JPanel() {
 
     override fun paintComponent(g: Graphics) {
         super.paintComponent(g)
-        val g2 = g as Graphics2D
         val layout = this.layout
         val graph = this.graph
         if (layout == null || graph == null || graph.nodes.isEmpty()) {
-            drawEmptyState(g2)
+            drawEmptyState(g as Graphics2D)
             return
         }
-        val original = g2.transform
-        val t = AffineTransform()
-        t.translate(offsetX, offsetY)
-        t.scale(scale, scale)
-        g2.transform = t
-        renderer.paint(g2, graph, layout)
-        g2.transform = original
-
-        drawLegend(g2)
+        // Use a scratch Graphics2D so our transform/stroke/color mutations cannot leak
+        // into the parent's graphics state (which previously caused occasional flicker
+        // on HiDPI / tooltip-repaint events).
+        val scratch = g.create() as Graphics2D
+        try {
+            scratch.translate(offsetX, offsetY)
+            scratch.scale(scale, scale)
+            renderer.paint(scratch, graph, layout)
+        } finally {
+            scratch.dispose()
+        }
+        drawLegend(g as Graphics2D)
     }
 
     private fun drawEmptyState(g: Graphics2D) {
@@ -146,23 +151,53 @@ class GraphPanel(private val project: Project) : JPanel() {
 
     private fun installMouseHandlers() {
         val handler = object : MouseAdapter() {
-            override fun mousePressed(e: MouseEvent) { dragLast = e.point }
-            override fun mouseReleased(e: MouseEvent) { dragLast = null }
+            override fun mousePressed(e: MouseEvent) {
+                dragLast = e.point
+                draggedNode = nodeAtScreen(e.x, e.y)
+                didDrag = false
+                cursor = if (draggedNode != null) java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR)
+                         else java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+            }
+            override fun mouseReleased(e: MouseEvent) {
+                val node = draggedNode
+                val wasDrag = didDrag
+                dragLast = null
+                draggedNode = null
+                didDrag = false
+                cursor = java.awt.Cursor.getDefaultCursor()
+                // Treat a press+release on a node with no meaningful drag as a click.
+                if (!wasDrag && node != null && nodeAtScreen(e.x, e.y) === node) {
+                    onNodeSelected?.invoke(node)
+                    openNodeInEditor(project, node)
+                }
+            }
             override fun mouseDragged(e: MouseEvent) {
                 val last = dragLast ?: return
-                offsetX += e.x - last.x
-                offsetY += e.y - last.y
+                val dx = e.x - last.x
+                val dy = e.y - last.y
+                if (!didDrag && (dx * dx + dy * dy) > DRAG_THRESHOLD_SQ) didDrag = true
+                val node = draggedNode
+                if (node != null) {
+                    // Move node in model space — convert screen delta to model delta via scale.
+                    val p = layout?.positions?.get(node.id)
+                    if (p != null) {
+                        p.x += (dx / scale).toInt()
+                        p.y += (dy / scale).toInt()
+                    }
+                } else {
+                    offsetX += dx
+                    offsetY += dy
+                }
                 dragLast = e.point
                 repaint()
             }
             override fun mouseMoved(e: MouseEvent) {
-                val hit = nodeAtScreen(e.x, e.y)
-                if (hit != hoveredNode) { hoveredNode = hit; repaint() }
-            }
-            override fun mouseClicked(e: MouseEvent) {
-                val node = nodeAtScreen(e.x, e.y) ?: return
-                onNodeSelected?.invoke(node)
-                openInEditor(node)
+                // The tooltip system handles hover UX on its own via getToolTipText; we
+                // intentionally do NOT trigger repaint here — earlier builds did, and the
+                // unnecessary redraw caused the graph to flicker on every cursor move.
+                hoveredNode = nodeAtScreen(e.x, e.y)
+                cursor = if (hoveredNode != null) java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+                         else java.awt.Cursor.getDefaultCursor()
             }
             override fun mouseWheelMoved(e: MouseWheelEvent) {
                 val factor = if (e.wheelRotation < 0) 1.1 else 1 / 1.1
@@ -179,16 +214,13 @@ class GraphPanel(private val project: Project) : JPanel() {
         addMouseWheelListener(handler)
     }
 
-    private fun openInEditor(node: ComponentNode) {
-        val path = node.filePath ?: return
-        val projectBase = project.basePath ?: return
-        val resolved = if (path.startsWith("/")) path else "$projectBase/$path"
-        val vFile = LocalFileSystem.getInstance().findFileByPath(resolved) ?: return
-        OpenFileDescriptor(project, vFile).navigate(true)
-    }
-
     private fun escape(s: String): String =
         s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     private fun min(a: Double, b: Double): Double = if (a < b) a else b
+
+    private companion object {
+        // 4-pixel slop before a press becomes a drag — stops jitter on quick clicks.
+        const val DRAG_THRESHOLD_SQ = 16
+    }
 }
