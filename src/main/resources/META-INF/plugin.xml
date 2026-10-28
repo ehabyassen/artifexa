@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.artifexa.plugin</id>
     <name>Artifexa</name>
-    <vendor email="support@artifexa.dev" url="https://artifexa.dev">Artifexa</vendor>
+    <vendor email="ehab.ahmed.yassen@gmail.com" url="https://github.com/ehabyassen/artifexa">Ehab Ahmed</vendor>
 
     <description><![CDATA[
         <h2>Artifexa — AI-Powered Visual Code-Change Review</h2>
