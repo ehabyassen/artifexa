@@ -15,7 +15,8 @@
             <li>Layer-violation detection (Controller &rarr; Service &rarr; Repository &rarr; Domain)</li>
             <li>Interactive, pan/zoom graph in a Tool Window</li>
             <li>AI review: architecture, best-practices, task-completion scoring</li>
-            <li>Source code never leaves your machine in raw form &mdash; only structured summaries</li>
+            <li>Bounded AI context &mdash; only structured metadata and the changed diff hunks are sent, never whole files</li>
+            <li>Local-only mode &mdash; rule-based review with no network calls</li>
         </ul>
     ]]></description>
 
